@@ -1,9 +1,8 @@
 """Rich rendering for the interactive chat UI.
 
-`answer_question` returns a plain string using stable conventions (headers ending with ':',
-'- ' bullets, `[kind:id]` citations, a trailing '(model: ...)' line). This module styles those
-conventions with `rich` for the `chat` command only; the `ask` command still prints the raw
-string so it stays scriptable/pipeable. Rich handles Windows VT, `NO_COLOR`, and tty detection.
+`answer_question` returns a plain string. This module renders it with `rich.markdown.Markdown`
+for the `chat` command only; the `ask` command still prints the raw string so it stays
+scriptable/pipeable. Rich handles Windows VT, `NO_COLOR`, and tty detection.
 """
 
 from __future__ import annotations
@@ -11,21 +10,15 @@ from __future__ import annotations
 import re
 
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
 
-CITATION_RE = re.compile(r"\[[a-z_]+:[^\]]+\]")
-MODEL_RE = re.compile(r"^\(model: .+\)$")
-BULLET_RE = re.compile(r"^(\s*)-\s+(.*)$")
-STEP_RE = re.compile(r"^\s*\d+[.)]\s+")
-NOTE_PREFIXES = ("Note:", "Strategy/speculation", "Speculation:", "Model note:", "Web note:")
+MODEL_RE = re.compile(r"^\(model: .+\)$", re.MULTILINE)
+CITATION_RE = re.compile(r"\[([a-z_]+:[^\]]+)\]")
 
-CITATION_STYLE = "dim italic"
-HEADER_STYLE = "bold cyan"
-NOTE_STYLE = "yellow italic"
 BULLET_GLYPH = "•"
-SUBBULLET_GLYPH = "◦"
 
 
 def build_console(*, no_color: bool = False) -> Console:
@@ -54,75 +47,21 @@ def render_prompt(console: Console) -> str:
 
 
 def render_answer(console: Console, text: str) -> None:
-    ascii_only = not _supports_unicode(console)
-    for raw in text.split("\n"):
-        console.print(_render_line(raw, ascii_only=ascii_only))
+    model_match = MODEL_RE.search(text)
+    model_line = model_match.group(0) if model_match else None
+    body = MODEL_RE.sub("", text).rstrip() if model_match else text
+
+    body = CITATION_RE.sub(r"\\[\1\\]", body)
+    console.print(Markdown(body))
+
+    if model_line:
+        console.print(Text(model_line, style="dim"))
 
 
 def _supports_unicode(console: Console) -> bool:
     encoding = console.encoding or "utf-8"
     try:
-        (BULLET_GLYPH + SUBBULLET_GLYPH + "›").encode(encoding)
+        (BULLET_GLYPH + "›").encode(encoding)
         return True
     except (UnicodeEncodeError, LookupError):
         return False
-
-
-def _render_line(raw: str, *, ascii_only: bool = False) -> Text:
-    stripped = raw.strip()
-    if not stripped:
-        return Text("")
-
-    if MODEL_RE.match(stripped):
-        return _with_citations(raw, "dim")
-
-    if any(stripped.startswith(prefix) for prefix in NOTE_PREFIXES):
-        return _with_citations(raw, NOTE_STYLE)
-
-    bullet = BULLET_RE.match(raw)
-    if bullet:
-        indent, body = bullet.group(1), bullet.group(2)
-        if ascii_only:
-            glyph = "-" if len(indent) < 2 else "*"
-        else:
-            glyph = SUBBULLET_GLYPH if len(indent) >= 2 else BULLET_GLYPH
-        text = Text(indent)
-        text.append(f"{glyph} ", style="cyan")
-        name, sep, rest = _split_name(body)
-        text.append_text(_with_citations(name, "bold"))
-        if sep:
-            text.append(sep)
-            text.append_text(_with_citations(rest, ""))
-        return text
-
-    if STEP_RE.match(raw):
-        return _with_citations(raw, "green")
-
-    if stripped.endswith(":") and len(stripped) <= 60 and not CITATION_RE.search(stripped):
-        return Text(raw, style=HEADER_STYLE)
-
-    return _with_citations(raw, "")
-
-
-def _split_name(body: str) -> tuple[str, str, str]:
-    """Split a bullet body into (entity-name, separator, remainder) at the first ' - ' or ': '."""
-    candidates = [body.find(" - "), body.find(": ")]
-    positions = [pos for pos in candidates if pos != -1]
-    if not positions:
-        return body, "", ""
-    cut = min(positions)
-    sep_len = 3 if body[cut:cut + 3] == " - " else 2
-    return body[:cut], body[cut:cut + sep_len], body[cut + sep_len:]
-
-
-def _with_citations(text: str, base_style: str) -> Text:
-    result = Text()
-    pos = 0
-    for match in CITATION_RE.finditer(text):
-        if match.start() > pos:
-            result.append(text[pos:match.start()], style=base_style or None)
-        result.append(match.group(0), style=CITATION_STYLE)
-        pos = match.end()
-    if pos < len(text):
-        result.append(text[pos:], style=base_style or None)
-    return result
