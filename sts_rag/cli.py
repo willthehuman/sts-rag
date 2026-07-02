@@ -43,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     chat.add_argument("--web", action="store_true", help="add optional community web context for strategy questions")
     chat.add_argument("--web-max-results", type=int, default=3)
     chat.add_argument("--web-domain", action="append", dest="web_domains", default=None)
+    chat.add_argument("--no-color", action="store_true", help="disable colored/formatted chat output")
 
     embed = sub.add_parser("embed", help="embed chunks for vector search")
     embed.add_argument("--db", type=Path, default=DEFAULT_DB)
@@ -106,32 +107,36 @@ def _cmd_ask(args: argparse.Namespace) -> int:
 
 
 def _cmd_chat(args: argparse.Namespace) -> int:
+    from . import render
+
     conn = connect(args.db)
     try:
         initialize(conn)
-        print("sts-rag chat. Type 'exit' or Ctrl-Z/Ctrl-D to quit.")
+        console = render.build_console(no_color=args.no_color)
+        render.render_banner(console, backend=args.backend, web=args.web)
         while True:
             try:
-                question = input("> ").strip()
+                question = render.render_prompt(console)
             except EOFError:
-                print()
+                console.print()
                 break
             if not question:
                 continue
             if question.lower() in {"exit", "quit", ":q"}:
                 break
-            print(
-                answer_question(
-                    conn,
-                    question,
-                    backend=args.backend,
-                    model=args.model,
-                    limit=args.limit,
-                    web=args.web,
-                    web_max_results=args.web_max_results,
-                    web_domains=args.web_domains,
-                )
+            answer = answer_question(
+                conn,
+                question,
+                backend=args.backend,
+                model=args.model,
+                limit=args.limit,
+                web=args.web,
+                web_max_results=args.web_max_results,
+                web_domains=args.web_domains,
             )
+            console.print()
+            render.render_answer(console, answer)
+            console.print()
         return 0
     finally:
         conn.close()

@@ -10,16 +10,26 @@ C:\Users\wcperrier\TSpire\.venv\Scripts\python.exe -m sts_rag chat --backend aut
 
 By default, answers use only JAR-derived facts: localization JSON plus class bytecode metadata.
 Exact factual questions are answered from SQLite first. Strategy questions run reusable game tools
-against the database, such as mechanic search, entity lookup, and synergy expansion, then OpenRouter
-or Ollama can synthesize an answer over that structured context.
+against the database, such as mechanic search, entity lookup, and synergy expansion, plus a creative
+engine that turns detected colors/mechanics into named deck archetypes and combos (validated against
+the database so every citation is real). OpenRouter or Ollama can then synthesize an answer over that
+structured context. Ask `give details on <card/relic/...>` for a deep-dive on a single entity.
 
 Examples:
 
 ```powershell
 C:\Users\wcperrier\TSpire\.venv\Scripts\python.exe -m sts_rag ask --backend none "what relics should i look for for a poison deck?"
 C:\Users\wcperrier\TSpire\.venv\Scripts\python.exe -m sts_rag ask --backend ollama "what are ways to have an infinite deck with the watcher?"
+C:\Users\wcperrier\TSpire\.venv\Scripts\python.exe -m sts_rag ask --backend none "give details on violet lotus"
 C:\Users\wcperrier\TSpire\.venv\Scripts\python.exe -m sts_rag chat --backend openrouter --web --web-domain reddit.com --web-domain slay-the-spire.fandom.com
 ```
+
+## Interactive chat
+
+`chat` renders answers with color and structure via [`rich`](https://github.com/Textualize/rich):
+headers, bulleted card/relic lists, and dimmed `[card:Bash]` citations. Colors auto-disable when
+output is piped or `NO_COLOR` is set; pass `--no-color` to force plain text. The one-shot `ask`
+command always prints plain text so it stays easy to script and pipe.
 
 `--web` is optional. With OpenRouter it enables the OpenRouter web plugin. With Ollama, `sts-rag`
 performs a small app-side web search/fetch and passes community snippets into the local model.
@@ -46,8 +56,11 @@ Use `--backend none` for deterministic local answers without model calls.
 ## Answer Pipeline
 
 1. Exact SQL handles factual comparisons and counts, such as highest cost cards or starting decks.
+   A `give details on X` / `tell me about X` lookup returns a single-entity deep-dive.
 2. Generic game tools broaden strategy prompts into mechanics like Poison, Stance, Orbs, draw,
    energy, copy effects, card spam, and cross-color card access.
-3. Optional web context can add community strategy sources, clearly separated from JAR-derived facts.
-4. The model synthesizes strategy/speculation from the cited components, without claiming novelty
+3. The creative engine proposes named archetypes/combos (e.g. "Catalyst poison stack", "Dropkick
+   Vulnerable loop"), validated against the database, so even `--backend none` gives deck ideas.
+4. Optional web context can add community strategy sources, clearly separated from JAR-derived facts.
+5. The model synthesizes strategy/speculation from the cited components, without claiming novelty
    unless an indexed community/run corpus supports it.

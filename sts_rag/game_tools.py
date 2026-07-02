@@ -477,8 +477,10 @@ def _analysis_notes(question: str, mechanics: list[str], sections: list[dict[str
     notes = []
     if "best" in question:
         notes.append("There is no objective best-card fact in the JAR; it contains mechanics, text, and numbers, not a win-rate tier list.")
-    if _mentions(question, {"limit", "maximum", "max", "theoretical", "theorical"}) and "orb_slot" in mechanics:
-        notes.append("No fixed numeric hard cap for orb slots was found in the retrieved JAR text; cited effects show ways to add or remove slots.")
+    if _mentions(question, {"limit", "maximum", "max", "theoretical", "theorical"}) and ("orb_slot" in mechanics or "orb" in mechanics):
+        notes.append("Defect starts with 3 orb slots. No fixed numeric hard cap for orb slots appears in the retrieved JAR text; slot-adders like Capacitor, Consume (net +1 after -1), Inserter, and the Runic Capacitor relic keep raising it, so the practical limit is how many you can afford to add.")
+    if _mentions(question, {"limit", "maximum", "max", "theoretical", "theorical"}) and "energy" in mechanics:
+        notes.append("Base energy per turn is 3. No hard energy cap is encoded in the retrieved text; per-turn boosters (relics/powers) and refund/0-cost cards stack multiplicatively in a single turn, so 'maximum energy' is best framed as a per-turn combo, not a fixed number.")
     if "never" in question or "brand new" in question:
         notes.append("Novelty cannot be proven from JAR facts alone; add community/run corpora to check whether an idea is already known.")
     if "cross_color" in mechanics:

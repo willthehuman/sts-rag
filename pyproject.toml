@@ -9,6 +9,7 @@ description = "A dependency-light Slay the Spire JAR fact extractor and RAG CLI.
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+dependencies = ["rich>=13"]
 
 [project.scripts]
 sts-rag = "sts_rag.cli:main"

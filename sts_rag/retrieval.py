@@ -8,6 +8,8 @@ import re
 import sqlite3
 from typing import Any
 
+from . import creative
+
 
 CLASS_COLORS = {
     "ironclad": "RED",
@@ -72,6 +74,46 @@ INFINITE_SEEDS = {
         "Sundial",
         "Unceasing Top",
         "Abacus",
+    ],
+    "GREEN": [
+        "Tactician",
+        "Reflex",
+        "Acrobatics",
+        "Burst",
+        "Adrenaline",
+        "After Image",
+        "Cloak and Dagger",
+        "Blade Dance",
+        "Infinite Blades",
+        "Accuracy",
+        "Sundial",
+        "Unceasing Top",
+    ],
+    "BLUE": [
+        "Echo Form",
+        "All for One",
+        "Hologram",
+        "Machine Learning",
+        "Seek",
+        "Turbo",
+        "Loop",
+        "Defragment",
+        "Capacitor",
+        "Sundial",
+        "Unceasing Top",
+    ],
+    "PURPLE": [
+        "Rushdown",
+        "Tantrum",
+        "Eruption",
+        "Fear No Evil",
+        "Flurry of Blows",
+        "Empty Fist",
+        "Vigilance",
+        "Mental Fortress",
+        "Simmering Fury",
+        "Sundial",
+        "Unceasing Top",
     ],
 }
 
@@ -142,6 +184,9 @@ def exact_answer(conn: sqlite3.Connection, question: str) -> dict[str, Any] | No
             "answer": f"The JAR extractor found {row['n']} card classes.",
             "citations": ["entities:card"],
         }
+    detail = _maybe_entity_detail(conn, q)
+    if detail:
+        return detail
     return None
 
 
@@ -442,6 +487,181 @@ def _format_starting_deck(conn: sqlite3.Connection, deck: list[str]) -> tuple[st
     return summary, citations
 
 
+DETAIL_TRIGGERS = (
+    re.compile(r"details?\s+(?:on|about|for|of)\s+(.+)"),
+    re.compile(r"tell me about\s+(.+)"),
+    re.compile(r"(?:give|show)\s+(?:me\s+)?(?:the\s+)?(?:details?|info(?:rmation)?|stats?)\s+(?:on|about|for|of)\s+(.+)"),
+    re.compile(r"info(?:rmation)?\s+(?:on|about)\s+(.+)"),
+    re.compile(r"describe\s+(.+)"),
+    re.compile(r"what does\s+(.+?)\s+do"),
+    re.compile(r"what(?:'s| is)\s+(.+?)\s+do(?:es)?"),
+)
+
+_DETAIL_TRAILING_KINDS = {"card", "relic", "potion", "power", "monster", "event", "keyword", "achievement"}
+_DETAIL_KIND_PRIORITY = ["card", "relic", "potion", "power", "keyword", "event", "monster", "character", "achievement"]
+
+CARD_FLAG_LABELS = {
+    "exhaust": "Exhaust",
+    "is_ethereal": "Ethereal",
+    "is_innate": "Innate",
+    "retain": "Retain",
+    "self_retain": "Retain",
+}
+
+
+def _maybe_entity_detail(conn: sqlite3.Connection, question: str) -> dict[str, Any] | None:
+    target = _detail_target(question)
+    if not target:
+        return None
+    return entity_detail_answer(conn, target)
+
+
+def _detail_target(question: str) -> str | None:
+    for pattern in DETAIL_TRIGGERS:
+        match = pattern.search(question)
+        if not match:
+            continue
+        candidate = match.group(1).strip().strip("?.!").strip()
+        candidate = re.sub(r"^(?:a|an|the)\s+", "", candidate)
+        words = candidate.split()
+        if words and words[-1] in _DETAIL_TRAILING_KINDS:
+            words = words[:-1]
+        candidate = " ".join(words).strip()
+        if candidate:
+            return candidate
+    return None
+
+
+def find_entity_by_name(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
+    """Resolve a free-text name to a single entity, normalized and ranked across kinds."""
+    query = _norm(name)
+    if not query:
+        return None
+    rows = conn.execute(
+        "SELECT kind, id, name, source_path, data_json FROM entities"
+    ).fetchall()
+    best: tuple[tuple[int, int, int], sqlite3.Row] | None = None
+    for row in rows:
+        name_norm = _norm(row["name"])
+        id_norm = _norm(row["id"])
+        rank: int | None = None
+        if query in {name_norm, id_norm}:
+            rank = 0
+        elif name_norm.startswith(query) or query.startswith(name_norm):
+            rank = 1
+        elif id_norm.startswith(query) or query.startswith(id_norm):
+            rank = 2
+        elif query in name_norm or (len(query) >= 5 and name_norm in query):
+            rank = 3
+        if rank is None:
+            continue
+        kind_priority = _DETAIL_KIND_PRIORITY.index(row["kind"]) if row["kind"] in _DETAIL_KIND_PRIORITY else len(_DETAIL_KIND_PRIORITY)
+        key = (rank, kind_priority, len(row["name"]))
+        if best is None or key < best[0]:
+            best = (key, row)
+    if best is None:
+        return None
+    row = best[1]
+    data = json.loads(row["data_json"])
+    chunk = conn.execute(
+        "SELECT text FROM chunks WHERE entity_kind = ? AND entity_id = ? LIMIT 1",
+        (row["kind"], row["id"]),
+    ).fetchone()
+    return {
+        "kind": row["kind"],
+        "id": row["id"],
+        "name": row["name"],
+        "source_path": row["source_path"],
+        "data": data,
+        "facts": data.get("facts", {}),
+        "text": chunk["text"] if chunk else "",
+    }
+
+
+def entity_detail_answer(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
+    ent = find_entity_by_name(conn, name)
+    if ent is None:
+        return None
+    facts = ent["facts"] or {}
+    data = ent["data"] or {}
+    lines = [f"{ent['name']} ({ent['kind']})"]
+
+    facts_line = _detail_facts_line(ent["kind"], facts)
+    if facts_line:
+        lines.append(facts_line)
+
+    description = data.get("rendered_description") or data.get("description") or ""
+    if description:
+        lines.append("Description:")
+        lines.append(f"- {description}")
+    extended = data.get("extended_description")
+    if extended:
+        lines.append(f"- Upgraded/extended: {extended}")
+    if data.get("flavor"):
+        lines.append(f"- Flavor: {data['flavor']}")
+    if data.get("moves"):
+        lines.append(f"- Moves: {data['moves']}")
+
+    citations = [f"{ent['kind']}:{ent['id']} -> {ent['source_path']}"]
+
+    color = facts.get("color")
+    if ent["kind"] in {"card", "relic", "power"}:
+        partners = creative.synergy_for_entity(
+            conn, color=color, text=ent["text"], kind=ent["kind"], limit=5
+        )
+        partners = [p for p in partners if not (p.kind == ent["kind"] and p.entity_id == ent["id"])]
+        if partners:
+            lines.append("Uses & synergies (strategy/speculation):")
+            for item in partners:
+                summary = item.text.splitlines()[0] if item.text else item.name
+                lines.append(f"- {item.name}: {_truncate(summary, 140)} [{item.citation}]")
+                citations.append(f"{item.kind}:{item.entity_id} -> {item.source_path}")
+
+    return {"kind": "exact", "answer": "\n".join(lines), "citations": citations}
+
+
+def _detail_facts_line(kind: str, facts: dict[str, Any]) -> str:
+    parts: list[str] = []
+    if kind == "card":
+        character = COLOR_LABELS.get(facts.get("color", ""), facts.get("character"))
+        for value in (character, facts.get("type"), facts.get("rarity")):
+            if value:
+                parts.append(str(value).title() if str(value).isupper() else str(value))
+        if facts.get("cost") is not None:
+            parts.append(f"cost {facts['cost']}")
+        for key, label in (("damage", "damage"), ("block", "block"), ("magic_number", "magic")):
+            if facts.get(key) is not None:
+                parts.append(f"{label} {facts[key]}")
+        flags = [label for key, label in CARD_FLAG_LABELS.items() if facts.get(key)]
+        parts.extend(flags)
+        if facts.get("tags"):
+            parts.append(f"tags: {facts['tags']}")
+    elif kind == "relic":
+        if facts.get("tier"):
+            parts.append(f"{str(facts['tier']).title()} relic")
+    elif kind == "potion":
+        for value in (facts.get("rarity"), facts.get("size")):
+            if value:
+                parts.append(str(value).title())
+    elif kind == "monster":
+        if facts.get("act_or_area"):
+            parts.append(f"area: {facts['act_or_area']}")
+        if facts.get("damage") is not None:
+            parts.append(f"damage {facts['damage']}")
+    return "Facts: " + ", ".join(parts) if parts else ""
+
+
+def _truncate(text: str, limit: int) -> str:
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _norm(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
 def retrieve(conn: sqlite3.Connection, question: str, *, limit: int = 8) -> list[dict[str, Any]]:
     rows = _retrieve_fts(conn, question, limit=limit)
     if rows:
@@ -452,8 +672,9 @@ def retrieve(conn: sqlite3.Connection, question: str, *, limit: int = 8) -> list
 def strategy_context(conn: sqlite3.Connection, question: str, *, limit: int = 12) -> list[dict[str, Any]]:
     q = question.lower()
     color = _requested_color(q)
-    if color == "RED" and _mentions(q, {"infinite", "loop", "combo"}):
-        return named_context(conn, INFINITE_SEEDS["RED"], kinds=("card", "relic"), limit=max(limit, len(INFINITE_SEEDS["RED"])))
+    if color in INFINITE_SEEDS and _mentions(q, {"infinite", "loop", "combo"}):
+        seeds = INFINITE_SEEDS[color]
+        return named_context(conn, seeds, kinds=("card", "relic"), limit=max(limit, len(seeds)))
     if color == "RED" and "block" in q:
         rows = block_strategy_context(conn, limit=max(limit, 12))
         if rows:
